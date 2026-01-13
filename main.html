@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>just blackboard</title>
+  <meta name="description" content="just blackboard" />
+  <style>
+    :root{
+      --bg:#0b0f12;
+      --ui: rgba(255,255,255,0.08);
+      --ui2: rgba(255,255,255,0.12);
+      --txt: rgba(255,255,255,0.85);
+    }
+    html,body{
+      height:100%;
+      margin:0;
+      background: var(--bg);
+      overflow:hidden;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      user-select:none;
+    }
+
+    /* Blackboard container */
+    .stage{
+      position:fixed; inset:0;
+      display:flex;
+      align-items:stretch;
+      justify-content:center;
+      background: radial-gradient(1200px 700px at 50% 40%, rgba(255,255,255,0.04), transparent 60%),
+                  linear-gradient(180deg, #090c0f, #0b0f12 55%, #080b0e);
+    }
+
+    /* Canvas stack */
+    #boardWrap{
+      position:relative;
+      flex:1;
+      display:flex;
+    }
+
+    canvas{
+      position:absolute; inset:0;
+      width:100%; height:100%;
+      touch-action:none;
+    }
+
+    /* Subtle vignette + grain overlay for realism */
+    .overlay{
+      pointer-events:none;
+      position:absolute; inset:0;
+      background:
+        radial-gradient(1200px 800px at 50% 40%, rgba(255,255,255,0.06), transparent 60%),
+        radial-gradient(900px 600px at 50% 120%, rgba(0,0,0,0.55), transparent 55%),
+        radial-gradient(900px 600px at 50% -10%, rgba(0,0,0,0.50), transparent 55%);
+      mix-blend-mode: multiply;
+    }
+
+    /* UI: minimal floating pill */
+    .ui{
+      position:fixed;
+      left:50%;
+      bottom:18px;
+      transform:translateX(-50%);
+      display:flex;
+      gap:10px;
+      align-items:center;
+      padding:10px 12px;
+      border-radius:999px;
+      background: rgba(10, 14, 18, 0.6);
+      backdrop-filter: blur(10px);
+      border:1px solid rgba(255,255,255,0.10);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+
+    .dot{
+      width:26px; height:26px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,0.20);
+      background: var(--c);
+      cursor:pointer;
+      box-shadow: 0 6px 14px rgba(0,0,0,0.25);
+      position:relative;
+      overflow:hidden;
+    }
+    .dot::after{ /* chalky speck */
+      content:"";
+      position:absolute; inset:-20%;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.55), transparent 35%),
+                  radial-gradient(circle at 70% 70%, rgba(0,0,0,0.25), transparent 40%);
+      opacity:0.35;
+      transform: rotate(12deg);
+      mix-blend-mode: overlay;
+    }
+
+    .dot[aria-pressed="true"]{
+      outline:2px solid rgba(255,255,255,0.75);
+      outline-offset:2px;
+    }
+
+    .btn{
+      height:30px;
+      padding:0 12px;
+      border-radius:999px;
+      border:1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.06);
+      color: var(--txt);
+      cursor:pointer;
+      font-size:13px;
+      letter-spacing: 0.2px;
+    }
+    .btn:hover{ background: rgba(255,255,255,0.09); }
+    .btn:active{ transform: translateY(1px); }
+
+    .hint{
+      position:fixed;
+      left:16px;
+      top:14px;
+      padding:8px 10px;
+      border-radius:12px;
+      background: rgba(0,0,0,0.25);
+      border:1px solid rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.68);
+      font-size:12px;
+      backdrop-filter: blur(10px);
+    }
+    .hint b{ color: rgba(255,255,255,0.85); font-weight:600; }
+
+    @media (max-width:480px){
+      .hint{ display:none; }
+      .ui{ bottom:14px; gap:8px; padding:10px; }
+      .btn{ padding:0 10px; }
+      .dot{ width:24px; height:24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div id="boardWrap">
+      <!-- base board texture -->
+      <canvas id="board"></canvas>
+      <!-- drawing layer -->
+      <canvas id="draw"></canvas>
+      <div class="overlay"></div>
+    </div>
+  </div>
+
+  <div class="hint"><b>Draw</b> anywhere · <b>E</b> eraser · <b>C</b> clear · <b>[ ]</b> size</div>
+
+  <div class="ui" role="toolbar" aria-label="chalk toolbar">
+    <button class="dot" id="cWhite"  style="--c:#f2f6ff" aria-pressed="true"  aria-label="white"></button>
+    <button class="dot" id="cPink"   style="--c:#ff7ac8" aria-pressed="false" aria-label="pink"></button>
+    <button class="dot" id="cBlue"   style="--c:#66b6ff" aria-pressed="false" aria-label="blue"></button>
+    <button class="dot" id="cYellow" style="--c:#ffe066" aria-pressed="false" aria-label="yellow"></button>
+    <button class="btn" id="eraser" title="E">Eraser</button>
+    <button class="btn" id="clear" title="C">Clear</button>
+  </div>
+
+<script>
+(() => {
+  const board = document.getElementById('board');
+  const draw  = document.getElementById('draw');
+  const bw = board.getContext('2d');
+  const ctx = draw.getContext('2d');
+
+  // HiDPI handling
+  function resize() {
+    const dpr = Math.max(1, Math.min(2.5, window.devicePixelRatio || 1));
+    const w = Math.floor(draw.clientWidth * dpr);
+    const h = Math.floor(draw.clientHeight * dpr);
+
+    for (const c of [board, draw]) {
+      c.width = w; c.height = h;
+    }
+
+    // Rebuild board texture
+    paintBoardTexture(bw, w, h);
+
+    // Keep existing drawing? (simple MVP: clear on resize)
+    ctx.clearRect(0,0,w,h);
+    setCompositing();
+  }
+
+  // Realistic-ish chalkboard texture (procedural)
+  function paintBoardTexture(g, w, h){
+    g.clearRect(0,0,w,h);
+
+    // Base gradient
+    const grad = g.createLinearGradient(0,0,0,h);
+    grad.addColorStop(0, '#0b1014');
+    grad.addColorStop(0.5, '#0a0f12');
+    grad.addColorStop(1, '#070b0e');
+    g.fillStyle = grad;
+    g.fillRect(0,0,w,h);
+
+    // Soft smudges
+    for(let i=0;i<140;i++){
+      const x = Math.random()*w;
+      const y = Math.random()*h;
+      const r = (Math.random()*0.12 + 0.03) * Math.min(w,h);
+      const a = Math.random()*0.06;
+      const rg = g.createRadialGradient(x,y,0,x,y,r);
+      rg.addColorStop(0, `rgba(255,255,255,${a})`);
+      rg.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = rg;
+      g.fillRect(x-r,y-r,r*2,r*2);
+    }
+
+    // Chalk dust grain (noise)
+    const img = g.getImageData(0,0,w,h);
+    const data = img.data;
+
+    // Slight streaking + grain
+    for(let y=0;y<h;y++){
+      const rowJitter = (Math.random()*2-1) * 0.8;
+      for(let x=0;x<w;x++){
+        const idx = (y*w + x) * 4;
+        const n = (Math.random()*2 - 1); // [-1,1]
+        const streak = Math.sin((x+rowJitter)*0.015) * 0.6 + Math.sin((x+rowJitter)*0.045) * 0.25;
+        const v = (n*10 + streak*6);
+
+        // apply to RGB subtly
+        data[idx+0] = clamp8(data[idx+0] + v);
+        data[idx+1] = clamp8(data[idx+1] + v);
+        data[idx+2] = clamp8(data[idx+2] + v);
+        // alpha unchanged
+      }
+    }
+    g.putImageData(img,0,0);
+
+    // Vignette
+    const vg = g.createRadialGradient(w*0.5, h*0.45, Math.min(w,h)*0.2, w*0.5, h*0.5, Math.min(w,h)*0.85);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+    g.fillStyle = vg;
+    g.fillRect(0,0,w,h);
+  }
+
+  function clamp8(v){ return v<0?0:(v>255?255:v); }
+
+  // Drawing state
+  const colors = {
+    white:  '#f2f6ff',
+    pink:   '#ff7ac8',
+    blue:   '#66b6ff',
+    yellow: '#ffe066',
+  };
+
+  let mode = 'chalk'; // 'chalk' | 'eraser'
+  let color = colors.white;
+  let size = 10;      // brush base size in px (in canvas units)
+  let isDown = false;
+  let last = null;
+
+  // Composite settings for chalk feel
+  function setCompositing(){
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // Chalk brush: multi-stroke with noise + dust
+  function drawChalkLine(a, b){
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const steps = Math.ceil(dist / 1.8);
+
+    for(let i=0;i<steps;i++){
+      const t = i / steps;
+      const x = a.x + dx*t;
+      const y = a.y + dy*t;
+
+      // Jitter and pressure variance
+      const jx = (Math.random()*2 - 1) * 0.9;
+      const jy = (Math.random()*2 - 1) * 0.9;
+      const p  = 0.65 + Math.random()*0.55;
+
+      // Base stroke (slightly transparent)
+      ctx.strokeStyle = hexToRgba(color, 0.20 + Math.random()*0.12);
+      ctx.lineWidth = size * p;
+
+      ctx.beginPath();
+      ctx.moveTo(x + jx, y + jy);
+      ctx.lineTo(x + jx + (Math.random()*1.2 - 0.6), y + jy + (Math.random()*1.2 - 0.6));
+      ctx.stroke();
+
+      // Add chalk dust specks around the line
+      if (Math.random() < 0.55) {
+        const specks = 2 + Math.floor(Math.random()*4);
+        for(let s=0;s<specks;s++){
+          const rx = x + (Math.random()*2 - 1) * size * 0.9;
+          const ry = y + (Math.random()*2 - 1) * size * 0.9;
+          const rr = Math.random() * 1.2 + 0.3;
+          ctx.fillStyle = hexToRgba(color, 0.08 + Math.random()*0.10);
+          ctx.beginPath();
+          ctx.arc(rx, ry, rr, 0, Math.PI*2);
+          ctx.fill();
+        }
+      }
+
+      // Slight "smudge" to mimic chalk drag
+      if (Math.random() < 0.15) {
+        ctx.fillStyle = 'rgba(255,255,255,0.03)';
+        ctx.fillRect(x - size*0.25, y - 0.5, size*0.5, 1);
+      }
+    }
+  }
+
+  function eraseLine(a, b){
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.strokeStyle = 'rgba(0,0,0,1)';
+    ctx.lineWidth = size * 1.8;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    // feathering
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = size * 2.4;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function hexToRgba(hex, a){
+    const c = hex.replace('#','');
+    const r = parseInt(c.slice(0,2),16);
+    const g = parseInt(c.slice(2,4),16);
+    const b = parseInt(c.slice(4,6),16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  // Pointer events
+  function toCanvasPoint(e){
+    const rect = draw.getBoundingClientRect();
+    const dpr = draw.width / rect.width;
+    return {
+      x: (e.clientX - rect.left) * dpr,
+      y: (e.clientY - rect.top)  * dpr
+    };
+  }
+
+  function onDown(e){
+    isDown = true;
+    last = toCanvasPoint(e);
+    // draw a dot
+    const p = {x:last.x+0.01, y:last.y+0.01};
+    if(mode === 'eraser') eraseLine(last,p);
+    else drawChalkLine(last,p);
+  }
+
+  function onMove(e){
+    if(!isDown) return;
+    const now = toCanvasPoint(e);
+    if(mode === 'eraser') eraseLine(last, now);
+    else drawChalkLine(last, now);
+    last = now;
+  }
+
+  function onUp(){
+    isDown = false;
+    last = null;
+  }
+
+  draw.addEventListener('pointerdown', (e)=>{ draw.setPointerCapture(e.pointerId); onDown(e); });
+  draw.addEventListener('pointermove', onMove);
+  draw.addEventListener('pointerup', onUp);
+  draw.addEventListener('pointercancel', onUp);
+  window.addEventListener('blur', onUp);
+
+  // UI controls
+  const dots = [
+    { id:'cWhite',  key:'white' },
+    { id:'cPink',   key:'pink'  },
+    { id:'cBlue',   key:'blue'  },
+    { id:'cYellow', key:'yellow'},
+  ];
+
+  function setActiveDot(activeId){
+    dots.forEach(d => {
+      const el = document.getElementById(d.id);
+      el.setAttribute('aria-pressed', d.id === activeId ? 'true' : 'false');
+    });
+  }
+
+  dots.forEach(d => {
+    document.getElementById(d.id).addEventListener('click', () => {
+      mode = 'chalk';
+      color = colors[d.key];
+      setActiveDot(d.id);
+      document.getElementById('eraser').textContent = 'Eraser';
+    });
+  });
+
+  document.getElementById('eraser').addEventListener('click', () => {
+    mode = (mode === 'eraser') ? 'chalk' : 'eraser';
+    document.getElementById('eraser').textContent = (mode === 'eraser') ? 'Chalk' : 'Eraser';
+    if(mode === 'chalk'){
+      // restore active dot outline (keep current color)
+      // find closest match
+      const active = dots.find(d => colors[d.key] === color);
+      if(active) setActiveDot(active.id);
+    } else {
+      // no dot active when erasing
+      dots.forEach(d=>document.getElementById(d.id).setAttribute('aria-pressed','false'));
+    }
+  });
+
+  document.getElementById('clear').addEventListener('click', () => {
+    ctx.clearRect(0,0,draw.width, draw.height);
+  });
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'e' || e.key === 'E') {
+      document.getElementById('eraser').click();
+    }
+    if (e.key === 'c' || e.key === 'C') {
+      document.getElementById('clear').click();
+    }
+    if (e.key === '[') size = Math.max(3, size - 1);
+    if (e.key === ']') size = Math.min(40, size + 1);
+  });
+
+  // Init
+  resize();
+  window.addEventListener('resize', resize, {passive:true});
+})();
+</script>
+</body>
+</html>
